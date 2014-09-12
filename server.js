@@ -1,0 +1,225 @@
+/**
+ * Module dependencies.
+ */
+'use strict';
+
+var express = require('express'),
+  bodyParser = require('body-parser'),
+  errorHandler = require('errorhandler'),
+  methodOverride = require('method-override'),
+  fs = require('fs'),
+  mongoose = require('mongoose'),
+  exec = require('child_process').exec,
+  env = process.env.NODE_ENV || 'development',
+  grid = require('gridfs-uploader'),
+  multer = require('multer'),
+  app = module.exports = express(),
+  flow = require('./flow-node.js')('tmp');
+
+// Configuration
+app.use(bodyParser({
+  uploadDir: __dirname + '/../app/tmp',
+  keepExtensions: true
+}));
+
+app.use(function(req, res, next) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  next();
+});
+
+app.use(methodOverride());
+if (app.get('env') === 'production') {
+  app.use(express.static(__dirname + '/../dist'));
+}
+app.use(express.static(__dirname + '/../app'));
+
+app.post('/file/upload', multer());
+
+if ('production' === env) {
+  app.use(errorHandler());
+  mongoose.connect(process.env['DEMODB']);
+} else if ('test' === env) {
+  app.use(errorHandler({ dumpExceptions: true, showStack: true }));
+  mongoose.connect('mongodb://localhost/forms-ng_test');
+
+  var dataPath = __dirname + '/test/e2edata';
+  var dataFiles = fs.readdirSync(dataPath);
+  dataFiles.forEach(function (file) {
+    var fname = dataPath + '/' + file;
+    if (fs.statSync(fname).isFile()) {
+      exec('mongoimport --db forms-ng_test --drop --collection ' + file.slice(0, 1) + 's --jsonArray < ' + fname,
+        function (error, stdout, stderr) {
+          if (error !== null) {
+            console.log('Error importing models : ' + error + ' (Code = ' + error.code + '    ' + error.signal + ') : ' + stderr + ' : ' + stdout);
+          }
+        });
+    }
+  });
+} else {
+  app.use(errorHandler({ dumpExceptions: true, showStack: true }));
+  mongoose.connect('mongodb://localhost/forms-ng_dev');
+}
+
+//// Bootstrap models
+var DataFormHandler = new (require(__dirname + '/lib/data_form.js'))(app, {urlPrefix: '/api/'});
+// Or if you want to do some form of authentication...
+// var DataFormHandler = new (require(__dirname + '/lib/data_form.js'))(app, {urlPrefix : '/api/', authentication : ensureAuthenticated});
+// var ensureAuthenticated = function (req, res, next) {
+//   Here you can do authentication using things like
+//        req.ip
+//        req.route
+//        req.url
+//  if (true) {
+//    return next();
+//  }
+//  res.status(401).send('No Authentication Provided');
+//};
+var modelsPath = __dirname + '/models';
+var modelFiles = fs.readdirSync(modelsPath);
+modelFiles.forEach(function (file) {
+  var fname = modelsPath + '/' + file;
+  if (fs.statSync(fname).isFile()) {
+    DataFormHandler.addResource(file.slice(0, -3), require(fname));
+  }
+});
+
+// If you want to use HTML5Mode uncomment the section below and modify
+// app/demo.js so that the call to urlService.setOptions includes {html5Mode: true}
+
+//app.configure(function() {
+//    // Serve the static files.  This kludge is to support dev and production mode - for a better way to do it see
+//    // https://github.com/angular-ui/ui-router/wiki/Frequently-Asked-Questions#how-to-configure-your-server-to-work-with-html5mode
+//    app.get(/^\/(scripts|partials|bower_components|demo|img|js)\/(.+)$/,function(req,res,next) {
+//        fs.realpath(__dirname + '/../app/' + req.params[0] + '/' + req.params[1], function (err, result) {
+//            if (err) {
+//                fs.realpath(__dirname + '/../dist/' + req.params[0] + '/' + req.params[1], function (err, result) {
+//                    if (err) {
+//                        throw err;
+//                    } else {
+//                        res.sendfile(result);
+//                    }
+//                });
+//            } else {
+//                res.sendfile(result);
+//            }
+//        });
+//    });
+//    app.all('/*', function(req, res, next) {
+//        // Just send the index.html for other files to support HTML5Mode
+//        res.sendfile('index.html', { root: __dirname + '/../app/' });
+//    });
+//});
+
+var g = new grid(mongoose.mongo);
+g.db = mongoose.connection.db;
+
+var fileSchema = new mongoose.Schema({
+  // Definition of the filename
+  filename: { type: String, list: true, required: true, trim: true, index: true },
+  // Define the content type
+  contentType: { type: String, trim: true, lowercase: true, required: true},
+  // length data
+  length: {type: Number, 'default': 0, form: {readonly: true}},
+  chunkSize: {type: Number, 'default': 0, form: {readonly: true}},
+  // upload date
+  uploadDate: { type: Date, 'default': Date.now, form: {readonly: true}},
+
+  // additional metadata
+  metadata: {
+    filename: { type: String, trim: true, required: true},
+    test: { type: String, trim: true }
+  },
+  md5: { type: String, trim: true }
+}, {safe: false, collection: 'fs.files'});
+
+mongoose.model('file', fileSchema);
+
+app.post('/file/upload', function (req, res) {
+  // multipart upload library only for the needed paths
+//  if (req.files) {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    flow.post(req, function(status, filename, original_filename, identifier) {
+      console.log(filename);
+        res.send(200, {
+            'identifier': 'myid'
+        });
+    });
+/*    g.putUniqueFile(req.files.files.path, req.files.files.originalname, null, function (err, result) {
+      var dbResult;
+      var files = [];
+      if (err && err.name === 'NotUnique') {
+        dbResult = err.result;
+      } else if (err) {
+        res.send(500);
+      } else {
+        dbResult = result;
+      }
+      var id = dbResult._id.toString();
+      var myresult = {
+        name: dbResult.filename,
+        size: dbResult.length,
+        url: '/file/' + id,
+        thumbnailUrl: '/file/' + id,
+        deleteUrl: '/file/' + id,
+        deleteType: 'DELETE',
+        result: dbResult
+      };
+      files.push(myresult);
+      res.send({files: files});
+    }); */
+//  }
+});
+
+// Handle status checks on chunks through Flow.js
+app.get('/file/upload', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  flow.get(req, function(status, filename, original_filename, identifier) {
+      if(status === 'found') {
+        res.send(200, {
+          identifier: 'myid'
+        });
+      } else {
+        res.send(404);
+      }
+  });
+});
+/*
+app.get('/file/:id', function (req, res) {
+  try {
+    g.getFileStream(req.params.id, function (err, stream) {
+      if (stream) {
+        stream.pipe(res);
+      } else {
+        res.send(400);
+      }
+    });
+  } catch (e) {
+    res.send(400);
+  }
+});*/
+
+app.delete('/file/:id', function (req, res) {
+  try {
+    g.deleteFile(req.params.id, function (err) {
+      if (err) {
+        res.send(500);
+      } else {
+        res.send();
+      }
+    });
+  } catch (e) {
+    res.send(500);
+  }
+});
+
+var port;
+
+port = process.env.PORT || 3001;
+app.listen(port);
+console.log('Express server listening on port %d in %s mode', port, app.settings.env);
